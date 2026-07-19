@@ -52,4 +52,26 @@ class SpeedFusionTest {
         assertTrue(SpeedFusion.isMoving(1.0f))
         assertTrue(!SpeedFusion.isMoving(0.2f))
     }
+
+    @Test
+    fun `zero-velocity update collapses accumulated drift`() {
+        val f = SpeedFusion()
+        repeat(200) { f.predict(1.5f, 0.02f) } // drift up to ~6 m/s
+        assertTrue(f.speed > 3f)
+        f.zeroVelocityUpdate()
+        assertEquals(0f, f.speed, 0f)
+    }
+
+    @Test
+    fun `standing still with positive accel bias does not creep`() {
+        // Reproduces the reported bug: GPS says stationary (ZUPT each 1 Hz fix)
+        // while a positive accel bias would otherwise integrate. Because the engine
+        // does not predict while stationary, the only input is the ZUPT -> stays 0.
+        val f = SpeedFusion()
+        repeat(30) { // 30 seconds of standing still
+            // engine gate: stationary -> no predict() calls at all this second
+            f.zeroVelocityUpdate() // the 1 Hz GPS fix
+        }
+        assertEquals(0f, f.speed, 0f)
+    }
 }
