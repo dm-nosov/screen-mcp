@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Voltline</string>
+    <string name="channel_tracking">Session tracking</string>
+    <string name="channel_tracking_desc">Keeps speed and distance logging while the screen is off.</string>
+    <string name="notif_title">Voltline is tracking</string>
+    <string name="notif_text">Recording speed, distance and launch telemetry.</string>
+    <string name="needs_location">Location permission is required to track speed and distance.</string>
+    <string name="export_empty">No session data to export yet.</string>
+    <string name="export_done">Exported %1$d rows to %2$s</string>
+</resources>
