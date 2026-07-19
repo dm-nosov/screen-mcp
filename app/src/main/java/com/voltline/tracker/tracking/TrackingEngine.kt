@@ -145,12 +145,18 @@ object TrackingEngine {
         }
 
         val fused = fusion.speed
-        maxSpeedMps = max(maxSpeedMps, fused)
+        val goodFix = lastAccuracy in 0.001f..GPS_ACCURACY_GATE_M
+
+        // Top speed is the honest peak of trustworthy GPS speed — NOT the fused
+        // value, which is tuned to lead for a responsive live readout and can
+        // overshoot the truth by integrating a second of noisy accel between fixes.
+        if (goodFix) {
+            maxSpeedMps = max(maxSpeedMps, gpsSpeed)
+        }
 
         val prev = lastLocation
         if (prev != null) {
             val stepM = haversine(prev, location)
-            val goodFix = lastAccuracy in 0.001f..GPS_ACCURACY_GATE_M
             // Only accumulate real movement from trustworthy fixes.
             if (goodFix && SpeedFusion.isMoving(gpsSpeed) && stepM < 60.0) {
                 distanceM += stepM
