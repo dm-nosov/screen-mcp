@@ -39,6 +39,16 @@ class SpeedFusion {
         speed = (speed + correctionGain * (gpsSpeed - speed)).coerceAtLeast(0f)
     }
 
+    /**
+     * Zero-velocity update. GPS reports we are stationary, so collapse whatever
+     * drift the accelerometer integrated between fixes. Without this, rectified
+     * sensor/hand noise integrates into a phantom speed that a fractional GPS
+     * correction can never fully claw back — the classic standing-still creep.
+     */
+    fun zeroVelocityUpdate() {
+        speed = 0f
+    }
+
     fun reset() {
         speed = 0f
     }
