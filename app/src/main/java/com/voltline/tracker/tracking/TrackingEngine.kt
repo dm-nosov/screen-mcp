@@ -39,6 +39,7 @@ object TrackingEngine {
     private var maxSpeedMps = 0f
     private var peakAccel = 0f
     private var hasFix = false
+    private var stationary = true // GPS says we are not moving -> don't integrate accel
     private var lastAccuracy = 0f
 
     private var lastLocation: Location? = null
@@ -71,6 +72,7 @@ object TrackingEngine {
         maxSpeedMps = 0f
         peakAccel = 0f
         hasFix = false
+        stationary = true
         lastAccuracy = 0f
         lastLocation = null
         lastAccelNanos = 0L
@@ -100,17 +102,23 @@ object TrackingEngine {
      */
     fun onLinearAcceleration(x: Float, y: Float, z: Float, eventNanos: Long) = synchronized(lock) {
         if (status == TrackingStatus.IDLE) return@synchronized
-        val aLong = longitudinalAccel(x, y, z)
 
-        if (lastAccelNanos != 0L) {
+        // Only feed the speed filter when GPS confirms we are moving AND we have a
+        // heading to project onto. Standing still, `predictAccel` is 0, so hand
+        // jitter can no longer integrate into a phantom speed.
+        val canPredict = !stationary && haveRotation && !bearingRad.isNaN()
+        if (canPredict && lastAccelNanos != 0L) {
             val dt = (eventNanos - lastAccelNanos) / 1_000_000_000f
-            fusion.predict(aLong, dt)
+            fusion.predict(projectedAccel(x, y, z), dt)
         }
         lastAccelNanos = eventNanos
 
-        peakAccel = max(peakAccel, abs(aLong))
+        // The trace shows the raw longitudinal signal regardless, so you can still
+        // see the launch shape build even before GPS has confirmed the move.
+        val traceValue = traceAccel(x, y, z)
+        peakAccel = max(peakAccel, abs(traceValue))
         if (trace.size >= TRACE_CAPACITY) trace.removeFirst()
-        trace.addLast(aLong)
+        trace.addLast(traceValue)
     }
 
     /** A fresh GPS fix. Anchors the fused speed and grows the honest distance. */
@@ -122,10 +130,18 @@ object TrackingEngine {
         if (status == TrackingStatus.ACQUIRING) status = TrackingStatus.TRACKING
 
         val gpsSpeed = if (location.hasSpeed()) location.speed else 0f
-        fusion.correct(gpsSpeed)
+        stationary = !SpeedFusion.isMoving(gpsSpeed)
 
-        if (location.hasBearing() && gpsSpeed >= SpeedFusion.MOVING_THRESHOLD_MPS) {
-            bearingRad = Math.toRadians(location.bearing.toDouble()).toFloat()
+        if (stationary) {
+            // Zero-velocity update: collapse any drift and drop the now-stale
+            // heading so we stop projecting accelerometer noise onto it.
+            fusion.zeroVelocityUpdate()
+            bearingRad = Float.NaN
+        } else {
+            fusion.correct(gpsSpeed)
+            if (location.hasBearing()) {
+                bearingRad = Math.toRadians(location.bearing.toDouble()).toFloat()
+            }
         }
 
         val fused = fusion.speed
@@ -185,29 +201,36 @@ object TrackingEngine {
     }
 
     /**
-     * Project device-frame linear acceleration onto the direction of travel.
+     * Acceleration along the direction of travel, for the speed filter.
      *
-     * With a rotation matrix we rotate into the world frame (east/north/up) and
-     * take the component along the GPS course. Without orientation or a course we
-     * fall back to horizontal magnitude, signed by whether the phone is
-     * accelerating — good enough to shape the launch trace, and the GPS
-     * correction cleans up any bias.
+     * Rotate the device-frame sample into the world frame (east/north/up) and take
+     * the component along the GPS course. Returns 0 when we lack a rotation matrix
+     * or a valid course: without a real heading the projection would just be
+     * rectified noise, which is exactly what used to integrate into phantom speed.
+     * The caller only invokes this while moving, so 0 here means "let GPS drive".
      */
-    private fun longitudinalAccel(x: Float, y: Float, z: Float): Float {
+    private fun projectedAccel(x: Float, y: Float, z: Float): Float {
+        if (!haveRotation || bearingRad.isNaN()) return 0f
+        // world = R * device;  world axes: X=east, Y=north, Z=up
+        val we = rotationMatrix[0] * x + rotationMatrix[1] * y + rotationMatrix[2] * z
+        val wn = rotationMatrix[3] * x + rotationMatrix[4] * y + rotationMatrix[5] * z
+        return we * sin(bearingRad) + wn * cos(bearingRad) // course unit vector (east, north)
+    }
+
+    /**
+     * Raw longitudinal signal for the launch-trace display only. When we have a
+     * course we show the projected component (signed, so braking dips down);
+     * otherwise the horizontal magnitude, which shapes the trace but never feeds
+     * the speed estimate.
+     */
+    private fun traceAccel(x: Float, y: Float, z: Float): Float {
         if (haveRotation) {
-            // world = R * device;  world axes: X=east, Y=north, Z=up
             val we = rotationMatrix[0] * x + rotationMatrix[1] * y + rotationMatrix[2] * z
             val wn = rotationMatrix[3] * x + rotationMatrix[4] * y + rotationMatrix[5] * z
-            return if (!bearingRad.isNaN()) {
-                // course unit vector in (east, north)
-                we * sin(bearingRad) + wn * cos(bearingRad)
-            } else {
-                val mag = sqrt(we * we + wn * wn)
-                // sign it by the dominant horizontal axis so the trace has shape
-                if (atan2(wn, we) >= 0) mag else -mag
-            }
+            if (!bearingRad.isNaN()) return we * sin(bearingRad) + wn * cos(bearingRad)
+            return sqrt(we * we + wn * wn)
         }
-        return sqrt(x * x + y * y) // last-resort horizontal magnitude
+        return sqrt(x * x + y * y)
     }
 
     private fun haversine(a: Location, b: Location): Double {
