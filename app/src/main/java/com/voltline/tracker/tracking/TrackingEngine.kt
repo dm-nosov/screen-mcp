@@ -98,13 +98,13 @@ object TrackingEngine {
 
     /**
      * A gravity-free acceleration sample in the device frame (TYPE_LINEAR_ACCELERATION).
-     * Returns the longitudinal component it derived, purely so the service can log it.
+     * Drives the speed filter (only while moving) and the launch trace (always).
      */
     fun onLinearAcceleration(x: Float, y: Float, z: Float, eventNanos: Long) = synchronized(lock) {
         if (status == TrackingStatus.IDLE) return@synchronized
 
         // Only feed the speed filter when GPS confirms we are moving AND we have a
-        // heading to project onto. Standing still, `predictAccel` is 0, so hand
+        // heading to project onto. Standing still, `projectedAccel` is 0, so hand
         // jitter can no longer integrate into a phantom speed.
         val canPredict = !stationary && haveRotation && !bearingRad.isNaN()
         if (canPredict && lastAccelNanos != 0L) {
@@ -145,12 +145,18 @@ object TrackingEngine {
         }
 
         val fused = fusion.speed
-        maxSpeedMps = max(maxSpeedMps, fused)
+        val goodFix = lastAccuracy in 0.001f..GPS_ACCURACY_GATE_M
+
+        // Top speed is the honest peak of trustworthy GPS speed — NOT the fused
+        // value, which is tuned to lead for a responsive live readout and can
+        // overshoot the truth by integrating a second of noisy accel between fixes.
+        if (goodFix) {
+            maxSpeedMps = max(maxSpeedMps, gpsSpeed)
+        }
 
         val prev = lastLocation
         if (prev != null) {
             val stepM = haversine(prev, location)
-            val goodFix = lastAccuracy in 0.001f..GPS_ACCURACY_GATE_M
             // Only accumulate real movement from trustworthy fixes.
             if (goodFix && SpeedFusion.isMoving(gpsSpeed) && stepM < 60.0) {
                 distanceM += stepM
